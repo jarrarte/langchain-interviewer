@@ -1,0 +1,3 @@
+# Ignore local environment variables file
+.env
+placeholder_resume.pdf
