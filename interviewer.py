@@ -40,6 +40,13 @@ class ResumeData(BaseModel):
     candidate_name: Optional[str] = Field(default=None, description="The full name of the candidate identified in the resume.")
     experiences: List[WorkExperience] = Field(description="A list of work experience objects.")
 
+# class JobDescriptionData(BaseModel):
+#     """Represents structured data extracted from the job description."""
+#     job_title: Optional[str] = Field(default=None, description="The job title mentioned in the job description.")
+#     company_name: Optional[str] = Field(default=None, description="The name of the company.")
+#     requirements: List[str] = Field(description="A list of requirements or qualifications mentioned in the job description.")
+#     responsibilities: List[str] = Field(description="A list of responsibilities mentioned in the job description.")
+
 # --- Main Interviewer Application Class ---
 
 class TechnicalInterviewerApp:
@@ -49,11 +56,12 @@ class TechnicalInterviewerApp:
     def __init__(
         self,
         resume_path: str,
-        llm_provider: str,            # Added
-        chat_model_name: str,         # Added
-        embedding_model_name: str,    # Added
-        job_description: Optional[str] = None,
-        temperature: float = 0.7      # Added temperature as parameter
+        job_description_path: str,
+        llm_provider: str,            
+        chat_model_name: str,         
+        embedding_model_name: str,    
+        temperature: float = 0.7
+        
     ):
         """
         Initializes the interviewer app.
@@ -70,7 +78,7 @@ class TechnicalInterviewerApp:
         print(f"Chat Model: {chat_model_name}, Embedding Model: {embedding_model_name}")
 
         self.resume_path = resume_path
-        self.job_description = job_description
+        self.job_description_path = job_description_path
         self.interview_stage = "ICEBREAKER"
         self.coding_preferences = {}
         self.candidate_name = None
@@ -109,6 +117,11 @@ class TechnicalInterviewerApp:
         # Initialize memory
         self.memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
 
+        # Load job description 
+        self.job_description_text = self._load_job_description()
+        if not self.job_description_text:
+             print(f"Warning: Could not load or process the job description at {self.job_description_path}. Some features might be limited.")
+            
         # Load resume and extract structured data
         self.resume_text, self.candidate_name, self.structured_experience = self._load_and_process_resume()
         if not self.resume_text:
@@ -192,7 +205,6 @@ class TechnicalInterviewerApp:
                  human_instructions = f"Start by greeting {self.candidate_name} by name, then ask a simple, open-ended icebreaker question."
 
         elif self.interview_stage == "RECENT_EXPERIENCE":
-            # --- MODIFICATION START ---
             if self.structured_experience: # Check if we have structured experience data
                 try:
                     # Get the most recent experience (assuming the first item is the most recent)
@@ -222,7 +234,6 @@ class TechnicalInterviewerApp:
             else:
                 # Fallback if no structured experience was extracted at all
                 human_instructions = "Ask a general question about the candidate's most recent work experience or a significant project they worked on."
-            # --- MODIFICATION END ---
 
         elif self.interview_stage == "AI_BASICS":
              human_instructions = "Ask a fundamental question about AI or Machine Learning concepts relevant to a Software Engineer role (e.g., difference between supervised/unsupervised learning, overfitting, activation functions)."
@@ -244,11 +255,22 @@ class TechnicalInterviewerApp:
     def _load_and_process_resume(self) -> (Optional[str], Optional[str], Optional[List[Dict[str, Any]]]):
         """Loads resume PDF, extracts text, and uses LLM to get structured name and experience."""
         
-        if not os.path.exists(self.resume_path): print(f"Error: Resume file not found at {self.resume_path}"); return None, None, []
-        print(f"Loading resume from: {self.resume_path}"); resume_text = None; candidate_name = None; experiences = []
+        if not os.path.exists(self.resume_path): 
+            print(f"Error: Resume file not found at {self.resume_path}"); 
+            return None, None, []
+        
+        print(f"Loading resume from: {self.resume_path}"); 
+        resume_text = None; 
+        candidate_name = None; 
+        experiences = []
+        
         try:
-            loader = PyPDFLoader(self.resume_path); docs = loader.load(); resume_text = "\n".join([doc.page_content for doc in docs])
-            if not resume_text: print("Warning: No text extracted from PDF."); return None, None, []
+            loader = PyPDFLoader(self.resume_path); 
+            docs = loader.load(); 
+            resume_text = "\n".join([doc.page_content for doc in docs])
+            if not resume_text: 
+                print("Warning: No text extracted from PDF."); 
+                return None, None, []
             print("Resume loaded successfully."); 
             print("Extracting structured name and experience using LLM...")
             parser = JsonOutputParser(pydantic_object=ResumeData)
@@ -256,10 +278,53 @@ class TechnicalInterviewerApp:
             parsing_chain = prompt | self.llm | parser
             structured_data = parsing_chain.invoke({"resume_text": resume_text, "format_instructions": parser.get_format_instructions()})
             print("Structured data extracted.")
-            if isinstance(structured_data, dict): candidate_name = structured_data.get('candidate_name'); experiences = structured_data.get('experiences', []) # ... error checks ...
-            else: print("Warning: LLM did not return expected structure.")
+            if isinstance(structured_data, dict): 
+                candidate_name = structured_data.get('candidate_name'); 
+                experiences = structured_data.get('experiences', []) 
+                # ... error checks ...
+            else: 
+                print("Warning: LLM did not return expected structure.")
+                
             return resume_text, candidate_name, experiences
         except Exception as e: print(f"Error loading or processing resume: {e}"); return resume_text, candidate_name, experiences
+
+    def _load_job_description(self) -> Optional[str]:
+    #def _load_job_description(self) -> (Optional[str], Optional[str], Optional[str], Optional[List[Dict[str, Any]]], Optional[List[Dict[str, Any]]]):
+        """Loads job description PDF, extracts text, and uses LLM to get structured name and experience."""
+        
+        if not os.path.exists(self.job_description_path): 
+            print(f"Error: Job description file not found at {self.job_description_path}"); 
+            return None, None, []
+        
+        print(f"Loading job description from: {self.job_description_path}"); 
+        job_description_text = None;
+        
+        try:
+            loader = PyPDFLoader(self.job_description_path); 
+            docs = loader.load(); 
+            job_description_text = "\n".join([doc.page_content for doc in docs])
+            if not job_description_text: print("Warning: No text extracted from PDF."); return None, None, []
+            print("Job description loaded successfully."); 
+            
+            # parser = JsonOutputParser(pydantic_object=JobDescriptionData)
+            # prompt = ChatPromptTemplate.from_messages([ SystemMessagePromptTemplate.from_template("... Parse job description ...\n{format_instructions}"), HumanMessagePromptTemplate.from_template("Job description Text:\n```{job_description_text}```")])
+            # parsing_chain = prompt | self.llm | parser
+            # structured_data = parsing_chain.invoke({"job_description_text": job_description_text, "format_instructions": parser.get_format_instructions()})
+            # print("Job description Structured data extracted.")
+            
+            # if isinstance(structured_data, dict): 
+            #     job_title = structured_data.get('job_title')
+            #     company_name = structured_data.get('company_name')
+            #     requirements = structured_data.get('requirements')
+            #     responsibilities = structured_data.get('responsibilities')
+            #     # ... error checks ...
+            # else: 
+            #     print("Warning: LLM did not return expected structure.")
+                
+            return job_description_text
+        except Exception as e: print(f"Error loading or processing job description: {e}"); 
+        
+        return job_description_text #, job_title, company_name, requirements, responsibilities
 
 
     def _initialize_vectorstore(self) -> Optional[FAISS]:
@@ -269,7 +334,8 @@ class TechnicalInterviewerApp:
         print("Initializing vector store...");
         try:
             texts_to_embed = [self.resume_text];
-            if self.job_description: texts_to_embed.append(self.job_description)
+            if self.job_description: 
+                texts_to_embed.append(self.job_description_text)
             text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150); all_splits = text_splitter.create_documents(texts_to_embed)
             print(f"Created {len(all_splits)} document chunks."); vectorstore = FAISS.from_documents(all_splits, self.embeddings)
             print("FAISS vector store created successfully."); return vectorstore
@@ -420,7 +486,10 @@ if __name__ == "__main__":
     DEFAULT_GOOGLE_EMBEDDING_MODEL = "models/embedding-001"
     DEFAULT_OPENAI_CHAT_MODEL = "gpt-4o-mini"
     DEFAULT_OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
+    
     DEFAULT_RESUME_PATH = "placeholder_resume.pdf"
+    DEFAULT_JOB_DESCRIPTION_PDF_PATH = "placeholder_job_description.pdf"   
+    
     DEFAULT_LLM_PROVIDER = "google" # Default provider if not specified
 
     config = {}
@@ -435,7 +504,6 @@ if __name__ == "__main__":
 
     # --- Determine LLM Provider and Models ---
     llm_provider = config.get("llm_provider", DEFAULT_LLM_PROVIDER).lower()
-    app_resume_path = config.get("resume_path", DEFAULT_RESUME_PATH)
     chat_model_name = None
     embedding_model_name = None
 
@@ -451,61 +519,18 @@ if __name__ == "__main__":
         print(f"Error: Unsupported llm_provider '{llm_provider}' in config.json. Supported providers: 'google', 'openai'.")
         exit(1) # Exit if provider is invalid
 
-
-    # --- Optional Job Description ---
-    JOB_DESCRIPTION_TEXT = """
-    Software Engineer - AI/ML
-    Job brief
-        We are seeking an AI Engineer to join our dynamic team and contribute to the development and enhancement of our AI-driven platforms. The ideal candidate will possess deep technical expertise in machine learning and artificial intelligence, with a proven track record of developing scalable AI solutions.
-
-    Your role will involve everything from data analysis and model building to integration and deployment, ensuring our AI initiatives drive substantial business impact.
-
-    Responsibilities
-        Develop machine learning models and AI solutions
-        Test, deploy, and maintain AI systems
-        Collaborate with data scientists and other engineers to integrate AI into broader system architectures
-        Stay current with AI trends and suggest improvements to existing systems and workflows
-    Requirements and skills
-        Degree in Computer Science, Engineering, or related field
-        Experience with machine learning, deep learning, NLP, and computer vision
-        Proficiency in Python, Java, and R
-        Strong knowledge of AI frameworks such as TensorFlow or PyTorch
-        Excellent problem-solving skills and ability to work in a team environment
-    """
-
-    # --- Create a Dummy PDF (TODO) ---
-    # dummy_pdf_path = "placeholder_job_description.pdf"
-    # pdf_writer = PdfWriter()
-    # pdf_buffer = BytesIO()
-
-    # # Create a new PDF page with the job description text
-
-    # c = canvas.Canvas(pdf_buffer, pagesize=letter)
-    # c.setFont("Helvetica", 12)
-    # text_object = c.beginText(50, 750)  # Starting position for text
-    # for line in JOB_DESCRIPTION_TEXT.strip().split("\n"):
-    #     text_object.textLine(line)
-    # c.drawText(text_object)
-    # c.showPage()
-    # c.save()
-
-    # # Add the generated page to the PDF writer
-    # pdf_buffer.seek(0)
-    # pdf_writer.add_page(pdf_buffer)
-
-    # # Write the PDF to the file
-    # with open(dummy_pdf_path, "wb") as f:
-    #     pdf_writer.write(f)
-
-    # print(f"Dummy PDF created at: {dummy_pdf_path}")
-
+    # --- Resume and job description paths ---
+    app_resume_path = config.get("resume_path", DEFAULT_RESUME_PATH)
+    job_description_path = config.get("job_description_path", DEFAULT_JOB_DESCRIPTION_PDF_PATH)
+    
     # --- Run the App ---
     if os.path.exists(app_resume_path):
         try:
             interviewer = TechnicalInterviewerApp(
+                # Pass resume and job description files path
                 resume_path=app_resume_path,
-                job_description=JOB_DESCRIPTION_TEXT,
-                # Pass provider and specific model names
+                job_description_path=job_description_path,
+                # Pass LLM provider and specific model names
                 llm_provider=llm_provider,
                 chat_model_name=chat_model_name,
                 embedding_model_name=embedding_model_name
