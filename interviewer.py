@@ -15,15 +15,15 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.memory import ConversationBufferMemory
 from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder, SystemMessagePromptTemplate, HumanMessagePromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
-from langchain_core.runnables import RunnablePassthrough # May be needed for complex memory integration if required
+# Import RunnableWithMessageHistory
+from langchain_core.runnables.history import RunnableWithMessageHistory
 # Use Pydantic v2 imports directly
 from pydantic import BaseModel, Field
 
 # --- Configuration ---
 load_dotenv() # Load environment variables from .env file
 
-# --- Pydantic Models for Structured Output Parsing (Updated) ---
-
+# --- Pydantic Models ---
 class WorkExperience(BaseModel):
     """Represents a single work experience entry."""
     job_title: str = Field(description="The job title held by the candidate.")
@@ -43,14 +43,14 @@ class TechnicalInterviewerApp:
     """
     A LangChain application simulating a technical interviewer.
     """
-    def __init__(self, resume_path: str, job_description: Optional[str] = None, model_name: str = "gemini-2.0-flash"):
+    def __init__(self, resume_path: str, job_description: Optional[str] = None, model_name: str = "gemini-1.5-flash-latest"):
         """
         Initializes the interviewer app.
 
         Args:
             resume_path: Path to the candidate's resume PDF file.
             job_description: Optional text of the job description.
-            model_name: The Google Generative AI model to use.
+            model_name: The Google Generative AI model to use. Defaults to "gemini-1.5-flash-latest".
         """
         print("Initializing Technical Interviewer App...")
         print(f"Using model: {model_name}")
@@ -64,6 +64,7 @@ class TechnicalInterviewerApp:
         # Initialize core components
         self.llm = ChatGoogleGenerativeAI(model=self.model_name, temperature=0.7)
         self.embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+        # Initialize memory
         self.memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
 
         # Load resume and extract structured data
@@ -78,189 +79,29 @@ class TechnicalInterviewerApp:
         # Initialize vector store
         self.vectorstore = self._initialize_vectorstore()
 
-        # No longer need to pre-define chains here
-        # self.question_chain = None
-        # self.feedback_chain = None
-
-        print("Initialization complete. Ready to start the interview.")
-
-    def _load_and_process_resume(self) -> (Optional[str], Optional[str], Optional[List[Dict[str, Any]]]):
-        """Loads resume PDF, extracts text, and uses LLM to get structured name and experience."""
-        if not os.path.exists(self.resume_path):
-             print(f"Error: Resume file not found at {self.resume_path}")
-             return None, None, []
-
-        print(f"Loading resume from: {self.resume_path}")
-        resume_text = None
-        candidate_name = None
-        experiences = []
-        try:
-            loader = PyPDFLoader(self.resume_path)
-            docs = loader.load()
-            resume_text = "\n".join([doc.page_content for doc in docs])
-            if not resume_text:
-                 print("Warning: No text extracted from PDF.")
-                 return None, None, []
-            print("Resume loaded successfully.")
-
-            print("Extracting structured name and experience using LLM...")
-            parser = JsonOutputParser(pydantic_object=ResumeData)
-            prompt = ChatPromptTemplate.from_messages([
-                SystemMessagePromptTemplate.from_template(
-                    "You are a resume analysis expert. Parse the following resume text. "
-                    "Extract the candidate's full name and a list of professional work experiences. "
-                    "For the name, identify the most likely full name of the candidate. "
-                    "For each experience, provide: 'job_title', 'company_name', 'start_date', 'end_date', and a 'summary' of key responsibilities/achievements. "
-                    "Format the output as a JSON object adhering to the provided schema, including 'candidate_name' and 'experiences' keys."
-                    "\n{format_instructions}"
-                ),
-                HumanMessagePromptTemplate.from_template("Resume Text:\n```{resume_text}```")
-            ])
-            # Using LCEL pipe syntax here already
-            parsing_chain = prompt | self.llm | parser
-            structured_data = parsing_chain.invoke({
-                "resume_text": resume_text,
-                "format_instructions": parser.get_format_instructions()
-            })
-            print("Structured data extracted.")
-
-            if isinstance(structured_data, dict):
-                candidate_name = structured_data.get('candidate_name')
-                experiences = structured_data.get('experiences', [])
-                if not experiences: print("Warning: No experiences extracted.")
-                if not isinstance(experiences, list):
-                    print("Warning: 'experiences' field is not a list.")
-                    experiences = []
-            else:
-                 print("Warning: LLM did not return the expected dictionary structure.")
-
-            return resume_text, candidate_name, experiences
-
-        except Exception as e:
-            print(f"Error loading or processing resume: {e}")
-            return resume_text, candidate_name, experiences
-
-    def _initialize_vectorstore(self) -> Optional[FAISS]:
-        """Chunks documents, creates embeddings, and initializes FAISS vector store."""
-        if not self.resume_text:
-             print("Skipping vector store initialization: No resume text.")
-             return None
-        print("Initializing vector store...")
-        try:
-            texts_to_embed = [self.resume_text]
-            if self.job_description:
-                texts_to_embed.append(self.job_description)
-            text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
-            all_splits = text_splitter.create_documents(texts_to_embed)
-            print(f"Created {len(all_splits)} document chunks.")
-            vectorstore = FAISS.from_documents(all_splits, self.embeddings)
-            print("FAISS vector store created successfully.")
-            return vectorstore
-        except Exception as e:
-            print(f"Error initializing vector store: {e}")
-            return None
-
-    def _get_relevant_context(self, query: str, k: int = 3) -> str:
-        """Retrieves relevant context from the vector store."""
-        if not self.vectorstore:
-            return "No vector store available."
-        try:
-            docs = self.vectorstore.similarity_search(query, k=k)
-            context = "\n---\n".join([doc.page_content for doc in docs])
-            return context
-        except Exception as e:
-            print(f"Error during similarity search: {e}")
-            return "Error retrieving context."
-
-    def _generate_question(self) -> str:
-        """Generates the next interview question based on the current stage using LCEL."""
-        print(f"\n--- Generating Question for Stage: {self.interview_stage} ---")
-
-        system_message = (
-            "You are a friendly but professional technical interviewer. Your goal is to assess the candidate based on their resume, "
-            "potentially a job description, and their answers. Ask relevant questions one at a time, manage the interview flow, "
-            "and maintain an encouraging tone. After the candidate answers, you will evaluate their response (in a separate step)."
-            f" The current interview stage is: {self.interview_stage}."
-        )
-        if self.candidate_name:
-             system_message += f" The candidate's name is {self.candidate_name}."
-
-        human_instructions = ""
-        # ... (Stage-specific instruction logic remains the same) ...
-        if self.interview_stage == "ICEBREAKER":
-            human_instructions = "Ask a simple, open-ended icebreaker question to start the conversation."
-            if self.candidate_name and not self.memory.chat_memory.messages:
-                 human_instructions = f"Start by greeting {self.candidate_name} by name, then ask a simple, open-ended icebreaker question."
-        elif self.interview_stage == "RECENT_EXPERIENCE":
-            if self.structured_experience:
-                if not self.structured_experience:
-                    human_instructions = "Ask a general question about the candidate's work experience or a significant project they worked on, as specific details couldn't be extracted."
-                else:
-                    recent_role = self.structured_experience[0]
-                    role_details = (f"Title: {recent_role.get('job_title', 'N/A')}, Company: {recent_role.get('company_name', 'N/A')}, Dates: {recent_role.get('start_date', 'N/A')} - {recent_role.get('end_date', 'N/A')}. Summary: {recent_role.get('summary', 'N/A')}")
-                    human_instructions = (f"The candidate's most recent role based on extracted data is: {role_details}. Based on this information and our conversation history, ask a specific question about a key project, challenge, or achievement mentioned in their summary for this role. ")
-                    if self.job_description:
-                        jd_context = self._get_relevant_context(f"Skills related to {recent_role.get('job_title', '')} or {recent_role.get('summary', '')}", k=2)
-                        if jd_context and "Error" not in jd_context and "No vector store" not in jd_context:
-                            human_instructions += f"\nConsider these potentially relevant points from the Job Description:\n{jd_context}"
-            else:
-                human_instructions = "Ask a general question about the candidate's most recent work experience or a significant project they worked on, as specific details couldn't be extracted."
-                context = self._get_relevant_context("recent work experience project achievement", k=2)
-                if context and "Error" not in context and "No vector store" not in context:
-                     human_instructions += f"\nPotentially relevant context from resume:\n{context}"
-        elif self.interview_stage == "AI_BASICS":
-             human_instructions = "The candidate wants to discuss AI. Ask a general question about their motivation, interest, or foundational understanding of AI/ML concepts."
-        elif self.interview_stage == "AI_ADVANCED":
-            context = self._get_relevant_context("AI machine learning deep learning neural networks LLMs computer vision technical design architecture", k=2)
-            human_instructions = ("Based on our conversation history and potentially relevant context from their resume/JD, ask a more specific question about an AI/ML concept (e.g., supervised vs unsupervised, activation functions, transformers, CNNs, RNNs, model evaluation, MLOps, AI ethics, system design for an AI feature). Avoid focusing only on Generative AI unless the conversation leads there. Gradually increase complexity if appropriate.")
-            if context and "Error" not in context and "No vector store" not in context:
-                 human_instructions += f"\nResume/JD Context:\n{context}"
-        elif self.interview_stage == "CODING_SETUP":
-            human_instructions = "Ask the candidate what difficulty level (easy, medium, hard) and programming language (Python or Java) they prefer for the upcoming coding exercise."
-        elif self.interview_stage == "CODING_CHALLENGE":
-            lang = self.coding_preferences.get('language', 'Python')
-            diff = self.coding_preferences.get('difficulty', 'medium')
-            human_instructions = (f"Generate a {diff} level coding problem suitable for a technical interview, solvable in {lang}. The problem should ideally relate to common data structures, algorithms, or basic logic. Provide only the problem description clearly.")
-        else:
-            return "Thank you for your time today. This concludes the interview."
-
-        # Create the prompt template
-        prompt = ChatPromptTemplate.from_messages([
-            SystemMessagePromptTemplate.from_template(system_message),
-            MessagesPlaceholder(variable_name="chat_history"), # Memory placeholder
-            HumanMessagePromptTemplate.from_template(human_instructions) # Use the instructions string
+        # --- Define Chains ---
+        question_prompt = ChatPromptTemplate.from_messages([
+            SystemMessagePromptTemplate.from_template("{system_message}"),
+            MessagesPlaceholder(variable_name="chat_history"),
+            HumanMessagePromptTemplate.from_template("{human_instructions}")
         ])
+        base_question_chain = question_prompt | self.llm
 
-        # Define the LCEL chain
-        chain = prompt | self.llm
+        # Wrap the base chain with history management
+        self.question_chain_with_history = RunnableWithMessageHistory(
+            base_question_chain,
+            lambda session_id: self.memory.chat_memory, # Returns the BaseChatMessageHistory object
+            # REMOVE input_messages_key: Let keys pass through directly
+            # input_messages_key="input_dict",
+            history_messages_key="chat_history", # Matches MessagesPlaceholder
+        )
 
-        # Load history from memory
-        # The key 'chat_history' must match the MessagesPlaceholder variable_name
-        memory_variables = self.memory.load_memory_variables({})
-
-        # Invoke the chain with history
-        # The input dictionary must contain keys for all variables in the prompt
-        # In this case, only 'chat_history' is explicitly defined as a variable placeholder
-        response = chain.invoke(memory_variables) # Pass the dictionary directly
-
-        # Extract content from the AIMessage response
-        question_content = response.content
-
-        # Manually save context AFTER generation (if needed, though memory handles this)
-        # self.memory.save_context({"input": human_instructions}, {"output": question_content}) # Example if manual saving were needed
-
-        return question_content
-
-    def _evaluate_answer(self, question: str, answer: str) -> str:
-        """Evaluates the candidate's answer and provides feedback using LCEL."""
-        print("--- Evaluating Answer ---")
-
-        system_message = (
+        # Feedback chain definition
+        feedback_system_message = (
             "You are an AI assistant evaluating a candidate's answer during a technical interview. "
             "Your goal is to provide constructive feedback."
         )
-        # Format the human message using f-string style within the template method
-        human_message_template = HumanMessagePromptTemplate.from_template(
+        feedback_human_template = (
             "Here was the question asked:\n'''{question}'''\n\n"
             "Here is the candidate's answer:\n'''{answer}'''\n\n"
             "Based on the question and answer, please provide specific, constructive feedback. "
@@ -269,126 +110,262 @@ class TechnicalInterviewerApp:
             "Be encouraging but objective. If evaluating code, assess correctness, efficiency (mention Big O if applicable), style, and edge cases."
             "\n\nFeedback:"
         )
-
-        # Create the prompt template
-        prompt = ChatPromptTemplate.from_messages([
-            SystemMessagePromptTemplate.from_template(system_message),
-            human_message_template
+        feedback_prompt = ChatPromptTemplate.from_messages([
+            SystemMessagePromptTemplate.from_template(feedback_system_message),
+            HumanMessagePromptTemplate.from_template(feedback_human_template)
         ])
+        self.feedback_chain = feedback_prompt | self.llm
 
-        # Define the LCEL chain
-        chain = prompt | self.llm
+        print("Initialization complete. Ready to start the interview.")
 
-        # Invoke the chain with the required input variables
-        response = chain.invoke({"question": question, "answer": answer})
+    # --- Helper methods for dynamic prompt content ---
+    def _get_system_message(self) -> str:
+        """Builds the system message dynamically."""
+        system_message = (
+            "You are a friendly but professional technical interviewer. Your goal is to assess the candidate based on their resume, "
+            "potentially a job description, and their answers. Ask relevant questions one at a time, manage the interview flow, "
+            "and maintain an encouraging tone. After the candidate answers, you will evaluate their response (in a separate step)."
+            f" The current interview stage is: {self.interview_stage}."
+        )
+        if self.candidate_name:
+             system_message += f" The candidate's name is {self.candidate_name}."
+             
+        system_message += (
+            " Review the recent conversation history provided. "
+            "Do NOT ask the exact same question that you asked in the immediately preceding turn. "
+            "Ask the next logical question based on the current interview stage and the flow of the conversation. If appropriate, you can ask a follow-up question related to the candidate's last answer."
+        )
 
-        # Extract content from the AIMessage response
+        return system_message
+
+    def _get_human_instructions_for_stage(self) -> str:
+        """Builds the human instructions based on the interview stage."""
+        human_instructions = ""
+
+        if self.interview_stage == "ICEBREAKER":
+            human_instructions = "Ask a simple, open-ended icebreaker question to start the conversation."
+            # Check history correctly using load_memory_variables
+            # Use .get("chat_history", []) to handle the case where history might be None initially
+            if self.candidate_name and not self.memory.load_memory_variables({}).get("chat_history", []):
+                 human_instructions = f"Start by greeting {self.candidate_name} by name, then ask a simple, open-ended icebreaker question."
+
+        elif self.interview_stage == "RECENT_EXPERIENCE":
+            # --- MODIFICATION START ---
+            if self.structured_experience: # Check if we have structured experience data
+                try:
+                    # Get the most recent experience (assuming the first item is the most recent)
+                    recent_role = self.structured_experience[0]
+
+                    # Safely get details, providing fallbacks if keys are missing
+                    job_title = recent_role.get("job_title", "their most recent role")
+                    company_name = recent_role.get("company_name", "their last company")
+                    summary = recent_role.get("summary", "") # Get the summary too for context
+
+                    # Construct specific instructions using the extracted details
+                    human_instructions = (
+                        f"The candidate's resume lists their most recent position as '{job_title}' at '{company_name}'. "
+                    )
+                    if summary:
+                        # Add summary context if available
+                        human_instructions += f"The summary mentioned: \"{summary}\". "
+                    human_instructions += (
+                        f"Ask a specific question focusing on their key responsibilities, a significant project, or a challenge they faced in that role at {company_name}. "
+                        "Avoid overly generic questions like 'Tell me about your last job'."
+                    )
+
+                except (IndexError, TypeError, AttributeError) as e:
+                    # Fallback if structured_experience is not a list, empty, or item isn't a dict/object
+                    print(f"Warning: Could not access recent role details from structured_experience: {e}. Falling back to general question.")
+                    human_instructions = "Ask a general question about the candidate's most recent work experience or a significant project they worked on."
+            else:
+                # Fallback if no structured experience was extracted at all
+                human_instructions = "Ask a general question about the candidate's most recent work experience or a significant project they worked on."
+            # --- MODIFICATION END ---
+
+        elif self.interview_stage == "AI_BASICS":
+             human_instructions = "Ask a fundamental question about AI or Machine Learning concepts relevant to a Software Engineer role (e.g., difference between supervised/unsupervised learning, overfitting, activation functions)."
+        elif self.interview_stage == "AI_ADVANCED":
+             human_instructions = "Ask a more advanced or practical AI/ML question (e.g., explain a specific algorithm like Transformers or CNNs, discuss MLOps, model deployment strategies, or handling imbalanced data)."
+        elif self.interview_stage == "CODING_SETUP":
+             human_instructions = "Ask the candidate their preferred programming language (e.g., Python, Java) and desired difficulty level (easy, medium, hard) for the upcoming coding challenge."
+        elif self.interview_stage == "CODING_CHALLENGE":
+             if self.coding_preferences:
+                 human_instructions = f"Generate a {self.coding_preferences.get('difficulty', 'medium')} coding problem suitable for a technical interview, solvable in {self.coding_preferences.get('language', 'Python')}. Present the problem clearly."
+             else:
+                 human_instructions = "Generate a medium difficulty coding problem suitable for a technical interview (e.g., array manipulation, string processing, basic data structures). Ask them to explain their approach first." # Fallback if preferences not set
+        else: # END stage
+            human_instructions = "The interview is concluding. Provide a polite closing remark, thank the candidate for their time, and briefly mention next steps if applicable (though you are an AI, so keep it general)."
+
+        return human_instructions
+
+    # --- Core Methods ---
+    def _load_and_process_resume(self) -> (Optional[str], Optional[str], Optional[List[Dict[str, Any]]]):
+        """Loads resume PDF, extracts text, and uses LLM to get structured name and experience."""
+        
+        if not os.path.exists(self.resume_path): print(f"Error: Resume file not found at {self.resume_path}"); return None, None, []
+        print(f"Loading resume from: {self.resume_path}"); resume_text = None; candidate_name = None; experiences = []
+        try:
+            loader = PyPDFLoader(self.resume_path); docs = loader.load(); resume_text = "\n".join([doc.page_content for doc in docs])
+            if not resume_text: print("Warning: No text extracted from PDF."); return None, None, []
+            print("Resume loaded successfully."); print("Extracting structured name and experience using LLM...")
+            parser = JsonOutputParser(pydantic_object=ResumeData)
+            prompt = ChatPromptTemplate.from_messages([ SystemMessagePromptTemplate.from_template("... Parse resume ...\n{format_instructions}"), HumanMessagePromptTemplate.from_template("Resume Text:\n```{resume_text}```")])
+            parsing_chain = prompt | self.llm | parser
+            structured_data = parsing_chain.invoke({"resume_text": resume_text, "format_instructions": parser.get_format_instructions()})
+            print("Structured data extracted.")
+            if isinstance(structured_data, dict): candidate_name = structured_data.get('candidate_name'); experiences = structured_data.get('experiences', []) # ... error checks ...
+            else: print("Warning: LLM did not return expected structure.")
+            return resume_text, candidate_name, experiences
+        except Exception as e: print(f"Error loading or processing resume: {e}"); return resume_text, candidate_name, experiences
+
+
+    def _initialize_vectorstore(self) -> Optional[FAISS]:
+        """Chunks documents, creates embeddings, and initializes FAISS vector store."""
+        
+        if not self.resume_text: print("Skipping vector store initialization: No resume text."); return None
+        print("Initializing vector store...");
+        try:
+            texts_to_embed = [self.resume_text];
+            if self.job_description: texts_to_embed.append(self.job_description)
+            text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150); all_splits = text_splitter.create_documents(texts_to_embed)
+            print(f"Created {len(all_splits)} document chunks."); vectorstore = FAISS.from_documents(all_splits, self.embeddings)
+            print("FAISS vector store created successfully."); return vectorstore
+        except Exception as e: print(f"Error initializing vector store: {e}"); return None
+
+    def _get_relevant_context(self, query: str, k: int = 3) -> str:
+        """Retrieves relevant context from the vector store."""
+        
+        if not self.vectorstore: return "No vector store available."
+        try: docs = self.vectorstore.similarity_search(query, k=k); context = "\n---\n".join([doc.page_content for doc in docs]); return context
+        except Exception as e: print(f"Error during similarity search: {e}"); return "Error retrieving context."
+
+    def _generate_question(self) -> str:
+        """Generates the next interview question using the history-aware chain."""
+        print(f"\n--- Generating Question for Stage: {self.interview_stage} ---")
+        if self.interview_stage == "END":
+             return "Thank you for your time today. This concludes the interview."
+
+        system_message = self._get_system_message()
+        human_instructions = self._get_human_instructions_for_stage()
+
+        # Prepare the input dictionary with keys directly expected by the prompt template
+        input_vars = {
+            "system_message": system_message,
+            "human_instructions": human_instructions
+            # 'chat_history' will be added automatically by RunnableWithMessageHistory
+        }
+
+        print(f"Invoking question chain with input vars: {list(input_vars.keys())}") # Debug print
+
+        response = self.question_chain_with_history.invoke(
+            # Pass the variables directly, not nested
+            input_vars,
+            config={"configurable": {"session_id": "interview_session"}}
+        )
+        question_content = response.content
+        print(f"Generated question: {question_content}") # Debug print
+        return question_content
+    
+
+    def _evaluate_answer(self, question: str, answer: str) -> str:
+        """Evaluates the candidate's answer and provides feedback using LCEL."""
+        
+        print("--- Evaluating Answer ---")
+        response = self.feedback_chain.invoke({"question": question, "answer": answer})
         feedback_content = response.content
         return feedback_content
 
     def _transition_state(self, user_input: str):
         """Transitions the interview stage based on user input or logic."""
-        # ... (method is unchanged) ...
         lower_input = user_input.lower()
-        current_stage = self.interview_stage
+        current_stage = self.interview_stage # Keep track of the stage *before* potential changes
+
+        # --- Keyword-based transitions (check these first) ---
         if "talk about ai" in lower_input or "discuss ai" in lower_input or "ask about ai" in lower_input:
             if self.interview_stage not in ["AI_BASICS", "AI_ADVANCED"]:
-                print("Transitioning state to AI_BASICS")
+                print("Transitioning state to AI_BASICS based on user request")
                 self.interview_stage = "AI_BASICS"
-                return
+                return # Exit after transition
         elif "coding challenge" in lower_input or "coding exercise" in lower_input or "let's code" in lower_input:
              if self.interview_stage != "CODING_SETUP":
-                print("Transitioning state to CODING_SETUP")
-                self.interview_stage = "CODING_SETUP"
-                return
+                 print("Transitioning state to CODING_SETUP based on user request")
+                 self.interview_stage = "CODING_SETUP"
+                 return # Exit after transition
         elif "stop" in lower_input or "end interview" in lower_input or "finish" in lower_input:
-             print("Transitioning state to END")
+             print("Transitioning state to END based on user request")
              self.interview_stage = "END"
-             return
+             return # Exit after transition
+
+        # --- Automatic stage progression ---
+        # Check the stage *before* keyword transitions might have changed it
         if current_stage == "ICEBREAKER":
-            print("Transitioning state to RECENT_EXPERIENCE")
+            print("Transitioning state from ICEBREAKER to RECENT_EXPERIENCE")
             self.interview_stage = "RECENT_EXPERIENCE"
         elif current_stage == "RECENT_EXPERIENCE":
-            history = self.memory.chat_memory.messages
-            experience_questions_count = 0
-            for i in range(0, len(history), 2):
-                 msg_content = history[i].content.lower()
-                 if "recent role" in msg_content or "work experience" in msg_content or ("project" in msg_content and "achievement" in msg_content):
-                     if i > 0 or "icebreaker" not in msg_content :
-                        experience_questions_count += 1
-            if experience_questions_count >= 1:
-                 print(f"Transitioning state to AI_BASICS (heuristic after {experience_questions_count} experience questions)")
-                 self.interview_stage = "AI_BASICS"
+            # --- SIMPLIFIED TRANSITION ---
+            # Automatically move to the next stage after one question in RECENT_EXPERIENCE
+            print(f"Transitioning state from RECENT_EXPERIENCE to AI_BASICS")
+            self.interview_stage = "AI_BASICS"
+            # Remove the complex counting logic
+        elif current_stage == "AI_BASICS":
+             # Decide when to move from AI_BASICS to AI_ADVANCED or other stage
+             # For now, let's assume one question here too, then maybe coding setup?
+             print(f"Transitioning state from AI_BASICS to AI_ADVANCED") # Or CODING_SETUP? Adjust flow as needed.
+             self.interview_stage = "AI_ADVANCED" # Or CODING_SETUP
+        elif current_stage == "AI_ADVANCED":
+             # After advanced AI, maybe move to coding setup?
+             print(f"Transitioning state from AI_ADVANCED to CODING_SETUP")
+             self.interview_stage = "CODING_SETUP"
         elif current_stage == "CODING_SETUP":
+             # This transition *requires* user input, so check preferences
              difficulty_match = re.search(r'\b(easy|medium|hard)\b', lower_input)
              language_match = re.search(r'\b(python|java)\b', lower_input, re.IGNORECASE)
              if difficulty_match and language_match:
                  self.coding_preferences['difficulty'] = difficulty_match.group(1)
                  self.coding_preferences['language'] = language_match.group(1).capitalize()
                  print(f"Coding preferences set: {self.coding_preferences}")
-                 print("Transitioning state to CODING_CHALLENGE")
+                 print("Transitioning state from CODING_SETUP to CODING_CHALLENGE")
                  self.interview_stage = "CODING_CHALLENGE"
              else:
+                 # Stay in CODING_SETUP if preferences aren't set
                  print("Could not detect both difficulty (easy/medium/hard) and language (Python/Java). Please specify.")
+                 # Ensure the stage doesn't change accidentally if only one part was matched
+                 self.interview_stage = "CODING_SETUP"
         elif current_stage == "CODING_CHALLENGE":
+            # This transition depends on user wanting another problem or ending
             if "another" in lower_input or "next problem" in lower_input:
-                print("Transitioning state back to CODING_SETUP")
+                print("Transitioning state back to CODING_SETUP for next challenge")
                 self.interview_stage = "CODING_SETUP"
             elif "conclude" in lower_input or "that's all" in lower_input or "end coding" in lower_input:
-                 print("Transitioning state to END")
-                 self.interview_stage = "END"
+                print("Transitioning state from CODING_CHALLENGE to END")
+                self.interview_stage = "END"
+            # Otherwise, stay in CODING_CHALLENGE (e.g., if user provides solution/asks question)
 
+        # Ensure END state persists
+        if self.interview_stage == "END":
+             print("Interview state is END.")
+
+    
     def start_interview(self):
         """Starts the interactive interview loop."""
-        print("\n--- Interview Started ---")
-        greeting = "Hello!"
-        if self.candidate_name:
-            greeting = f"Hello {self.candidate_name}!"
+        
+        print("\n--- Interview Started ---"); greeting = "Hello!";
+        if self.candidate_name: greeting = f"Hello {self.candidate_name}!"
         print(f"Interviewer: {greeting} Welcome to the technical interview simulation.")
         print("Type 'stop', 'end interview', or 'finish' at any time to end.")
         print("You can also say 'talk about AI' or 'coding challenge' to switch topics.")
-
         while self.interview_stage != "END":
-            # 1. Generate Question
             question = self._generate_question()
-            if self.interview_stage == "END":
-                 print(f"\nInterviewer: {question}")
-                 break
+            if self.interview_stage == "END": print(f"\nInterviewer: {question}"); break
             print(f"\nInterviewer: {question}")
-
-            is_coding_challenge_question = (self.interview_stage == "CODING_CHALLENGE" and
-                                            ("generate a" in question.lower() or "coding problem" in question.lower()) and
-                                            ("difficulty" in question.lower() or self.coding_preferences))
-
-            # 2. Get User Answer
+            is_coding_challenge_question = (self.interview_stage == "CODING_CHALLENGE" and ("generate a" in question.lower() or "coding problem" in question.lower()) and ("difficulty" in question.lower() or self.coding_preferences))
             user_answer = input("You: ")
-
-            if user_answer.lower() in ["stop", "end interview", "finish"]:
-                self.interview_stage = "END"
-                print("\nInterviewer: Understood. Thank you for your time today!")
-                break
-
-            # 3. Evaluate Answer & Provide Feedback (Skip for setup stage response & challenge presentation)
+            if user_answer.lower() in ["stop", "end interview", "finish"]: self.interview_stage = "END"; print("\nInterviewer: Understood. Thank you for your time today!"); break
             if self.interview_stage != "CODING_SETUP" and not is_coding_challenge_question:
                 feedback = self._evaluate_answer(question, user_answer)
                 print(f"\nInterviewer Feedback: {feedback}")
-                 # Save context AFTER feedback generation for the main loop
-                self.memory.save_context({"input": user_answer}, {"output": question + "\nFeedback: " + feedback}) # Save user input and AI question+feedback
-            elif is_coding_challenge_question:
-                 print("\nInterviewer: Okay, thank you for providing your solution. I will evaluate it.")
-                 # Save context for the coding challenge question and the upcoming solution
-                 self.memory.save_context({"input": user_answer}, {"output": question}) # Save user solution and AI challenge question
-                 pass
-            else: # CODING_SETUP response
-                 # Save context for the setup question and user preference response
-                 self.memory.save_context({"input": user_answer}, {"output": question})
-                 pass
-
-            # 4. Update Memory is now handled manually above via save_context
-
-            # 5. Transition State (based on the user's response)
-            self.transition_state(user_answer) # Corrected method name call
-
+            elif is_coding_challenge_question: print("\nInterviewer: Okay, thank you for providing your solution. I will evaluate it.")
+            self._transition_state(user_answer)
         print("\n--- Interview Ended ---")
 
 
@@ -396,47 +373,37 @@ class TechnicalInterviewerApp:
 if __name__ == "__main__":
     # --- Configuration Loading ---
     CONFIG_FILE_PATH = "config.json"
-    DEFAULT_MODEL = "gemini-2.0-flash"
+    # Updated fallback default model name
+    DEFAULT_MODEL = "gemini-1.5-flash-latest"
     DEFAULT_RESUME_PATH = "placeholder_resume.pdf"
 
-    config = {}
+    config = {};
     try:
-        with open(CONFIG_FILE_PATH, 'r') as f:
-            config = json.load(f)
+        with open(CONFIG_FILE_PATH, 'r') as f: config = json.load(f)
         print(f"Loaded configuration from {CONFIG_FILE_PATH}")
-    except FileNotFoundError:
-        print(f"Warning: Configuration file '{CONFIG_FILE_PATH}' not found. Using default values.")
-    except json.JSONDecodeError:
-        print(f"Warning: Error decoding JSON from '{CONFIG_FILE_PATH}'. Using default values.")
+    except FileNotFoundError: print(f"Warning: Configuration file '{CONFIG_FILE_PATH}' not found. Using default values.")
+    except json.JSONDecodeError: print(f"Warning: Error decoding JSON from '{CONFIG_FILE_PATH}'. Using default values.")
+    app_model_name = config.get("model_name", DEFAULT_MODEL); app_resume_path = config.get("resume_path", DEFAULT_RESUME_PATH)
 
-    app_model_name = config.get("model_name", DEFAULT_MODEL)
-    app_resume_path = config.get("resume_path", DEFAULT_RESUME_PATH)
 
     # --- Optional Job Description ---
     JOB_DESCRIPTION_TEXT = """
     Software Engineer - AI/ML
     ...
-    """ # Truncated for brevity
+    """ # Truncated
 
-    # --- Create a Dummy PDF for testing if needed ---
+    # --- Create a Dummy PDF ---
     if not os.path.exists(app_resume_path):
          try:
-             from reportlab.pdfgen import canvas
-             from reportlab.lib.pagesizes import letter
+             from reportlab.pdfgen import canvas; from reportlab.lib.pagesizes import letter
              print(f"Creating dummy PDF: {app_resume_path}")
-             # ... (dummy pdf creation code unchanged) ...
-             c = canvas.Canvas(app_resume_path, pagesize=letter)
-             textobject = c.beginText(40, 750)
-             c.setFont("Helvetica-Bold", 16)
-             textobject.textLine("Alex Chen")
-             c.setFont("Helvetica", 12)
+             c = canvas.Canvas(app_resume_path, pagesize=letter); textobject = c.beginText(40, 750)
+             c.setFont("Helvetica-Bold", 16); textobject.textLine("Alex Chen"); c.setFont("Helvetica", 12)
              # ... rest of dummy content ...
-             c.drawText(textobject)
-             c.save()
-         except ImportError:
-             print("Please install reportlab (`pip install reportlab`) to create a dummy PDF.")
-         except Exception as e:
-             print(f"Error creating dummy PDF: {e}")
+             c.drawText(textobject); c.save()
+         except ImportError: print("Please install reportlab (`pip install reportlab`) to create a dummy PDF.")
+         except Exception as e: print(f"Error creating dummy PDF: {e}")
+
 
     # --- Run the App ---
     if os.path.exists(app_resume_path):
@@ -449,6 +416,8 @@ if __name__ == "__main__":
             interviewer.start_interview()
         except Exception as e:
             print(f"\nAn error occurred during app execution: {e}")
+            import traceback
+            traceback.print_exc()
             print("Please ensure your GOOGLE_API_KEY is set correctly in the .env file and the resume path in config.json is valid.")
     else:
         print(f"Error: Resume PDF not found at '{app_resume_path}'. Please create it or update the path in config.json.")
