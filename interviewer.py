@@ -4,20 +4,23 @@ import json
 from dotenv import load_dotenv
 from typing import List, Dict, Any, Optional
 
-# LangChain components for document loading, splitting, embeddings, vector stores
+# LangChain components for document loading, splitting, vector stores
 from langchain_community.document_loaders import PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_community.vectorstores import FAISS
 
-# LangChain components for LLMs, chat models, memory, prompts, and parsers
-from langchain_google_genai import ChatGoogleGenerativeAI
+# --- Provider Specific Imports ---
+# Google Generative AI
+from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
+# OpenAI
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+# --- End Provider Specific Imports ---
+
+# LangChain components for memory, prompts, and parsers
 from langchain.memory import ConversationBufferMemory
 from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder, SystemMessagePromptTemplate, HumanMessagePromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
-# Import RunnableWithMessageHistory
 from langchain_core.runnables.history import RunnableWithMessageHistory
-# Use Pydantic v2 imports directly
 from pydantic import BaseModel, Field
 
 # --- Configuration ---
@@ -43,27 +46,66 @@ class TechnicalInterviewerApp:
     """
     A LangChain application simulating a technical interviewer.
     """
-    def __init__(self, resume_path: str, job_description: Optional[str] = None, model_name: str = "gemini-1.5-flash-latest"):
+    def __init__(
+        self,
+        resume_path: str,
+        llm_provider: str,            # Added
+        chat_model_name: str,         # Added
+        embedding_model_name: str,    # Added
+        job_description: Optional[str] = None,
+        temperature: float = 0.7      # Added temperature as parameter
+    ):
         """
         Initializes the interviewer app.
 
         Args:
             resume_path: Path to the candidate's resume PDF file.
+            llm_provider: The LLM provider ('google' or 'openai').
+            chat_model_name: The specific chat model name for the provider.
+            embedding_model_name: The specific embedding model name for the provider.
             job_description: Optional text of the job description.
-            model_name: The Google Generative AI model to use. Defaults to "gemini-1.5-flash-latest".
+            temperature: The temperature setting for the LLM.
         """
-        print("Initializing Technical Interviewer App...")
-        print(f"Using model: {model_name}")
+        print(f"Initializing Technical Interviewer App using provider: {llm_provider}...")
+        print(f"Chat Model: {chat_model_name}, Embedding Model: {embedding_model_name}")
+
         self.resume_path = resume_path
         self.job_description = job_description
-        self.model_name = model_name
         self.interview_stage = "ICEBREAKER"
         self.coding_preferences = {}
         self.candidate_name = None
 
-        # Initialize core components
-        self.llm = ChatGoogleGenerativeAI(model=self.model_name, temperature=0.7)
-        self.embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+        # --- Initialize LLM and Embeddings based on provider ---
+        self.llm = None
+        self.embeddings = None
+
+        if llm_provider == "google":
+            # Ensure GOOGLE_API_KEY is set in .env
+            if not os.getenv("GOOGLE_API_KEY"):
+                raise ValueError("GOOGLE_API_KEY not found in environment variables. Please set it in your .env file.")
+            self.llm = ChatGoogleGenerativeAI(model=chat_model_name, temperature=temperature) 
+            self.embeddings = GoogleGenerativeAIEmbeddings(model=embedding_model_name)
+            print("Initialized Google LLM and Embeddings.")
+        elif llm_provider == "openai":
+            # Ensure OPENAI_API_KEY is set in .env
+            if not os.getenv("OPENAI_API_KEY"):
+                 raise ValueError("OPENAI_API_KEY not found in environment variables. Please set it in your .env file.")
+            try:
+                self.llm = ChatOpenAI(model=chat_model_name, temperature=temperature)
+                self.embeddings = OpenAIEmbeddings(model=embedding_model_name)
+                print("Initialized OpenAI LLM and Embeddings.")
+            except ImportError:
+                 print("\nERROR: langchain-openai package not found.")
+                 print("Please install it: pip install langchain-openai\n")
+                 raise
+            except Exception as e:
+                 print(f"\nERROR initializing OpenAI components: {e}")
+                 print("Ensure your OPENAI_API_KEY is valid and the model names are correct.")
+                 raise
+        else:
+            # Should have been caught in __main__, but good to double-check
+            raise ValueError(f"Unsupported llm_provider: {llm_provider}")
+        
         # Initialize memory
         self.memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
 
@@ -207,7 +249,8 @@ class TechnicalInterviewerApp:
         try:
             loader = PyPDFLoader(self.resume_path); docs = loader.load(); resume_text = "\n".join([doc.page_content for doc in docs])
             if not resume_text: print("Warning: No text extracted from PDF."); return None, None, []
-            print("Resume loaded successfully."); print("Extracting structured name and experience using LLM...")
+            print("Resume loaded successfully."); 
+            print("Extracting structured name and experience using LLM...")
             parser = JsonOutputParser(pydantic_object=ResumeData)
             prompt = ChatPromptTemplate.from_messages([ SystemMessagePromptTemplate.from_template("... Parse resume ...\n{format_instructions}"), HumanMessagePromptTemplate.from_template("Resume Text:\n```{resume_text}```")])
             parsing_chain = prompt | self.llm | parser
@@ -373,37 +416,88 @@ class TechnicalInterviewerApp:
 if __name__ == "__main__":
     # --- Configuration Loading ---
     CONFIG_FILE_PATH = "config.json"
-    # Updated fallback default model name
-    DEFAULT_MODEL = "gemini-1.5-flash-latest"
+    DEFAULT_GOOGLE_CHAT_MODEL = "gemini-1.5-flash-latest"
+    DEFAULT_GOOGLE_EMBEDDING_MODEL = "models/embedding-001"
+    DEFAULT_OPENAI_CHAT_MODEL = "gpt-4o-mini"
+    DEFAULT_OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
     DEFAULT_RESUME_PATH = "placeholder_resume.pdf"
+    DEFAULT_LLM_PROVIDER = "google" # Default provider if not specified
 
-    config = {};
+    config = {}
     try:
-        with open(CONFIG_FILE_PATH, 'r') as f: config = json.load(f)
+        with open(CONFIG_FILE_PATH, 'r') as f:
+            config = json.load(f)
         print(f"Loaded configuration from {CONFIG_FILE_PATH}")
-    except FileNotFoundError: print(f"Warning: Configuration file '{CONFIG_FILE_PATH}' not found. Using default values.")
-    except json.JSONDecodeError: print(f"Warning: Error decoding JSON from '{CONFIG_FILE_PATH}'. Using default values.")
-    app_model_name = config.get("model_name", DEFAULT_MODEL); app_resume_path = config.get("resume_path", DEFAULT_RESUME_PATH)
+    except FileNotFoundError:
+        print(f"Warning: Configuration file '{CONFIG_FILE_PATH}' not found. Using default values.")
+    except json.JSONDecodeError:
+        print(f"Warning: Error decoding JSON from '{CONFIG_FILE_PATH}'. Using default values.")
+
+    # --- Determine LLM Provider and Models ---
+    llm_provider = config.get("llm_provider", DEFAULT_LLM_PROVIDER).lower()
+    app_resume_path = config.get("resume_path", DEFAULT_RESUME_PATH)
+    chat_model_name = None
+    embedding_model_name = None
+
+    if llm_provider == "google":
+        chat_model_name = config.get("google_chat_model", DEFAULT_GOOGLE_CHAT_MODEL)
+        embedding_model_name = config.get("google_embedding_model", DEFAULT_GOOGLE_EMBEDDING_MODEL)
+        print(f"Using Google provider with Chat Model: {chat_model_name}, Embedding Model: {embedding_model_name}")
+    elif llm_provider == "openai":
+        chat_model_name = config.get("openai_chat_model", DEFAULT_OPENAI_CHAT_MODEL)
+        embedding_model_name = config.get("openai_embedding_model", DEFAULT_OPENAI_EMBEDDING_MODEL)
+        print(f"Using OpenAI provider with Chat Model: {chat_model_name}, Embedding Model: {embedding_model_name}")
+    else:
+        print(f"Error: Unsupported llm_provider '{llm_provider}' in config.json. Supported providers: 'google', 'openai'.")
+        exit(1) # Exit if provider is invalid
 
 
     # --- Optional Job Description ---
     JOB_DESCRIPTION_TEXT = """
     Software Engineer - AI/ML
-    ...
-    """ # Truncated
+    Job brief
+        We are seeking an AI Engineer to join our dynamic team and contribute to the development and enhancement of our AI-driven platforms. The ideal candidate will possess deep technical expertise in machine learning and artificial intelligence, with a proven track record of developing scalable AI solutions.
 
-    # --- Create a Dummy PDF ---
-    if not os.path.exists(app_resume_path):
-         try:
-             from reportlab.pdfgen import canvas; from reportlab.lib.pagesizes import letter
-             print(f"Creating dummy PDF: {app_resume_path}")
-             c = canvas.Canvas(app_resume_path, pagesize=letter); textobject = c.beginText(40, 750)
-             c.setFont("Helvetica-Bold", 16); textobject.textLine("Alex Chen"); c.setFont("Helvetica", 12)
-             # ... rest of dummy content ...
-             c.drawText(textobject); c.save()
-         except ImportError: print("Please install reportlab (`pip install reportlab`) to create a dummy PDF.")
-         except Exception as e: print(f"Error creating dummy PDF: {e}")
+    Your role will involve everything from data analysis and model building to integration and deployment, ensuring our AI initiatives drive substantial business impact.
 
+    Responsibilities
+        Develop machine learning models and AI solutions
+        Test, deploy, and maintain AI systems
+        Collaborate with data scientists and other engineers to integrate AI into broader system architectures
+        Stay current with AI trends and suggest improvements to existing systems and workflows
+    Requirements and skills
+        Degree in Computer Science, Engineering, or related field
+        Experience with machine learning, deep learning, NLP, and computer vision
+        Proficiency in Python, Java, and R
+        Strong knowledge of AI frameworks such as TensorFlow or PyTorch
+        Excellent problem-solving skills and ability to work in a team environment
+    """
+
+    # --- Create a Dummy PDF (TODO) ---
+    # dummy_pdf_path = "placeholder_job_description.pdf"
+    # pdf_writer = PdfWriter()
+    # pdf_buffer = BytesIO()
+
+    # # Create a new PDF page with the job description text
+
+    # c = canvas.Canvas(pdf_buffer, pagesize=letter)
+    # c.setFont("Helvetica", 12)
+    # text_object = c.beginText(50, 750)  # Starting position for text
+    # for line in JOB_DESCRIPTION_TEXT.strip().split("\n"):
+    #     text_object.textLine(line)
+    # c.drawText(text_object)
+    # c.showPage()
+    # c.save()
+
+    # # Add the generated page to the PDF writer
+    # pdf_buffer.seek(0)
+    # pdf_writer.add_page(pdf_buffer)
+
+    # # Write the PDF to the file
+    # with open(dummy_pdf_path, "wb") as f:
+    #     pdf_writer.write(f)
+
+    # print(f"Dummy PDF created at: {dummy_pdf_path}")
 
     # --- Run the App ---
     if os.path.exists(app_resume_path):
@@ -411,14 +505,18 @@ if __name__ == "__main__":
             interviewer = TechnicalInterviewerApp(
                 resume_path=app_resume_path,
                 job_description=JOB_DESCRIPTION_TEXT,
-                model_name=app_model_name
+                # Pass provider and specific model names
+                llm_provider=llm_provider,
+                chat_model_name=chat_model_name,
+                embedding_model_name=embedding_model_name
             )
             interviewer.start_interview()
         except Exception as e:
             print(f"\nAn error occurred during app execution: {e}")
             import traceback
             traceback.print_exc()
-            print("Please ensure your GOOGLE_API_KEY is set correctly in the .env file and the resume path in config.json is valid.")
+            print("Please ensure your API keys (GOOGLE_API_KEY / OPENAI_API_KEY) are set correctly in the .env file,")
+            print("the resume path in config.json is valid, and necessary libraries (e.g., langchain-openai) are installed.")
     else:
         print(f"Error: Resume PDF not found at '{app_resume_path}'. Please create it or update the path in config.json.")
-
+        

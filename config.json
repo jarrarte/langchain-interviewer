@@ -1,5 +1,12 @@
 {
-    "model_name": "gemini-2.5-pro-exp-03-25",
-    "resume_path": "placeholder_resume.pdf"
-  }
+  "llm_provider": "openai",
+  "llm_provider.bak": "google",
+  "google_chat_model": "gemini-2.5-pro-exp-03-25",
+  "google_embedding_model": "models/embedding-001",
+  
+  "openai_chat_model": "gpt-4o-mini",
+  "openai_embedding_model": "text-embedding-3-small",
+
+  "resume_path": "placeholder_resume.pdf"
+}
   
