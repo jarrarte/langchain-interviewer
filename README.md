@@ -4,7 +4,7 @@
 
 This is just a sample project I created for learning how to use LangChain.
 
-This project is a Python application built using LangChain that simulates a technical interviewer. It aims to assess candidates by leveraging Large Language Models (LLMs) to process resumes, ask relevant questions based on interview stages, evaluate answers, and manage the overall interview flow. It supports multiple LLM providers like Google and OpenAI.
+It's a Python application built using LangChain that simulates a technical interviewer. It aims to assess candidates by leveraging Large Language Models (LLMs) to process resumes, ask relevant questions based on interview stages, evaluate answers, and manage the overall interview flow. It supports multiple LLM providers like Google and OpenAI.
 
 ## Features
 
@@ -21,73 +21,130 @@ This project is a Python application built using LangChain that simulates a tech
 
 ## Setup
 
-1.  **Prerequisites:**
-    * Python 3.x
+### Prerequisites
 
-2.  **Clone the Repository:**
-    ```bash
-    git clone [https://github.com/jarrarte/langchain-interviewer.git](https://github.com/jarrarte/langchain-interviewer.git)
-    cd langchain-interviewer
-    ```
+* Python 3.x
+* A Google Gemini or OpenAI API key
 
-3.  **Install Dependencies:**
-    The following dependencies are used:
-    * `langchain`
-    * `langchain-community`
-    * `langchain-google-genai`
-    * `langchain-openai`
-    * `python-dotenv`
-    * `faiss-cpu` (or `faiss-gpu` if you have CUDA set up)
-    * `pypdf`
-    * `reportlab`
+### Clone the Repository
 
-    You can typically install them using pip. Create a `requirements.txt` file with the list above and run:
-    ```bash
-    pip install -r requirements.txt
-    ```
-    *Note:* If using OpenAI, ensure `langchain-openai` is installed. The script includes a check and provides an install command if it's missing.
+```bash
+git clone https://github.com/jarrarte/langchain-interviewer.git
+```
 
-4.  **API Keys:**
-    * Create a `.env` file in the project root directory.
-    * Add your API key(s) to the `.env` file. You need at least one:
-        ```dotenv
-        GOOGLE_API_KEY="YOUR_GOOGLE_API_KEY"
-        # or
-        OPENAI_API_KEY="YOUR_OPENAI_API_KEY"
-        ```
-        The application will raise an error if the required key for the selected provider is not found.
+### Install Dependencies
 
-5.  **Configuration File (`config.json`):**
-    * Create a `config.json` file in the project root or modify the existing one.
-    * Specify the LLM provider, models, and file paths. Example:
-        ```json
-        {
-          "llm_provider": "google",
-          "google_chat_model": "gemini-1.5-flash-latest",
-          "google_embedding_model": "models/embedding-001",
-          "openai_chat_model": "gpt-4o-mini",
-          "openai_embedding_model": "text-embedding-3-small",
-          "resume_path": "path/to/your/resume.pdf",
-          "job_description_path": "path/to/your/job_description.pdf"
-        }
-        ```
-    * If `config.json` is missing or invalid, defaults will be used. Default provider is 'google'.
+The following dependencies are used:
+* `langchain`
+* `langchain-community`
+* `langchain-google-genai`
+* `langchain-openai`
+* `python-dotenv`
+* `faiss-cpu` (or `faiss-gpu` if you have CUDA set up)
+* `pypdf`
+* `reportlab`
 
-6.  **Input Files:**
-    * Place the candidate's resume PDF and the job description PDF at the paths specified in `config.json`. Placeholder files might be included in the repository.
+You should create a virtual environment and download all the requirements using pip. 
+Run:
 
-## Usage
+```bash
+cd langchain-interviewer
+python -m venv venv
+source venv/bin/activate
+...
+pip install -r requirements.txt
+```
+
+### API Keys
+
+* Create a `.env` file in the project root directory.
+* Add your API key(s) to the `.env` file. You need at least one (depending on the `llm_provider` in config.json):
+
+```dotenv
+GOOGLE_API_KEY="YOUR_GOOGLE_API_KEY"
+# or
+OPENAI_API_KEY="YOUR_OPENAI_API_KEY"
+```
+The application will raise an error if the required key for the selected provider is not found.
+
+### Configuration File (`config.json`)
+
+Modify the `config.json` file in the project root. Specify the LLM provider, models, and file paths. 
+
+Example:
+```json
+{
+    "llm_provider": "google",
+
+    "google_chat_model": "gemini-2.5-pro-exp-03-25",
+    "google_embedding_model": "models/embedding-001",
+
+    "openai_chat_model": "gpt-4o-mini",
+    "openai_embedding_model": "text-embedding-3-small",
+
+    "resume_path": "path/to/your/resume.pdf",
+    "job_description_path": "path/to/your/job_description.pdf"
+}
+```
+Valid options for `llm_provider` are currently `google` or `openai`.
+
+If `config.json` is missing or invalid, defaults will be used. Default LLM provider is `google`.
+
+### Input Files
+Place the candidate's resume PDF and the job description PDF at the paths specified in `config.json`. 
+
+### LangSmith Tracing (Optional)
+
+[LangSmith](https://smith.langchain.com/) can be used for tracing, monitoring, and debugging LangChain applications. 
+
+To enable LangSmith tracing, follow these steps:
+
+#### Enable Tracing
+
+Add the following to your `.env` file:
+```dotenv
+LANGCHAIN_TRACING_V2="true"
+```
+
+#### API Key
+
+If tracing is enabled, you must provide your LangSmith API key:
+```dotenv
+LANGCHAIN_API_KEY="YOUR_LANGSMITH_API_KEY"
+```
+
+#### Optional Configuration
+
+If you want to organize this project's calls in a specific **Project Name**, set `LANGCHAIN_PROJECT`:
+```dotenv
+LANGCHAIN_PROJECT="Technical-Interviewer-App"
+```
+If not set, runs will be assigned to the `default` project.
+
+You can also specify LangSmith **API Endpoint**, but the default `https://api.smith.langchain.com` 
+should be fine:
+
+```dotenv
+LANGCHAIN_ENDPOINT="https://api.smith.langchain.com"
+```
+
+#### Usage
+When enabled, LangSmith will automatically trace and log your application's interactions with LangChain, providing insights into its behavior and performance.
+
+*Note:* Ensure your API key and endpoint are kept secure and not shared publicly.
+
+## Application usage
 
 1.  Run the main application script from the terminal:
     ```bash
-    python your_main_script_name.py # Assuming the main script file name
+    python interviewer.py
     ```
 2.  The application will initialize, load the configured files and models, and start the interview simulation in the console.
 3.  Interact with the interviewer by typing your answers when prompted.
 4.  You can use commands like `stop`, `end interview`, or `finish` to end the session.
 5.  You can guide the interview by saying things like `talk about AI` or `coding challenge`.
 
-## Code Structure (Brief Overview based on provided text)
+## Code Structure
 
 * **`config.json`:** Stores configuration for LLM provider, models, and file paths.
 * **Main Python Script (`*.py`):**

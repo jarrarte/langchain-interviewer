@@ -482,7 +482,7 @@ class TechnicalInterviewerApp:
 if __name__ == "__main__":
     # --- Configuration Loading ---
     CONFIG_FILE_PATH = "config.json"
-    DEFAULT_GOOGLE_CHAT_MODEL = "gemini-1.5-flash-latest"
+    DEFAULT_GOOGLE_CHAT_MODEL = "gemini-2.5-pro-exp-03-25"
     DEFAULT_GOOGLE_EMBEDDING_MODEL = "models/embedding-001"
     DEFAULT_OPENAI_CHAT_MODEL = "gpt-4o-mini"
     DEFAULT_OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
