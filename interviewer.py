@@ -256,22 +256,22 @@ class TechnicalInterviewerApp:
         """Loads resume PDF, extracts text, and uses LLM to get structured name and experience."""
         
         if not os.path.exists(self.resume_path): 
-            print(f"Error: Resume file not found at {self.resume_path}"); 
+            print(f"Error: Resume file not found at {self.resume_path}")
             return None, None, []
         
-        print(f"Loading resume from: {self.resume_path}"); 
-        resume_text = None; 
-        candidate_name = None; 
+        print(f"Loading resume from: {self.resume_path}")
+        resume_text = None
+        candidate_name = None
         experiences = []
         
         try:
-            loader = PyPDFLoader(self.resume_path); 
-            docs = loader.load(); 
+            loader = PyPDFLoader(self.resume_path)
+            docs = loader.load()
             resume_text = "\n".join([doc.page_content for doc in docs])
             if not resume_text: 
-                print("Warning: No text extracted from PDF."); 
+                print("Warning: No text extracted from PDF.")
                 return None, None, []
-            print("Resume loaded successfully."); 
+            print("Resume loaded successfully.")
             print("Extracting structured name and experience using LLM...")
             parser = JsonOutputParser(pydantic_object=ResumeData)
             prompt = ChatPromptTemplate.from_messages([ SystemMessagePromptTemplate.from_template("... Parse resume ...\n{format_instructions}"), HumanMessagePromptTemplate.from_template("Resume Text:\n```{resume_text}```")])
@@ -279,32 +279,36 @@ class TechnicalInterviewerApp:
             structured_data = parsing_chain.invoke({"resume_text": resume_text, "format_instructions": parser.get_format_instructions()})
             print("Structured data extracted.")
             if isinstance(structured_data, dict): 
-                candidate_name = structured_data.get('candidate_name'); 
+                candidate_name = structured_data.get('candidate_name')
                 experiences = structured_data.get('experiences', []) 
                 # ... error checks ...
             else: 
                 print("Warning: LLM did not return expected structure.")
                 
             return resume_text, candidate_name, experiences
-        except Exception as e: print(f"Error loading or processing resume: {e}"); return resume_text, candidate_name, experiences
+        except Exception as e: print(f"Error loading or processing resume: {e}")
+        
+        return resume_text, candidate_name, experiences
 
     def _load_job_description(self) -> Optional[str]:
     #def _load_job_description(self) -> (Optional[str], Optional[str], Optional[str], Optional[List[Dict[str, Any]]], Optional[List[Dict[str, Any]]]):
         """Loads job description PDF, extracts text, and uses LLM to get structured name and experience."""
         
         if not os.path.exists(self.job_description_path): 
-            print(f"Error: Job description file not found at {self.job_description_path}"); 
+            print(f"Error: Job description file not found at {self.job_description_path}")
             return None, None, []
         
-        print(f"Loading job description from: {self.job_description_path}"); 
-        job_description_text = None;
+        print(f"Loading job description from: {self.job_description_path}")
+        job_description_text = None
         
         try:
-            loader = PyPDFLoader(self.job_description_path); 
-            docs = loader.load(); 
+            loader = PyPDFLoader(self.job_description_path)
+            docs = loader.load()
             job_description_text = "\n".join([doc.page_content for doc in docs])
-            if not job_description_text: print("Warning: No text extracted from PDF."); return None, None, []
-            print("Job description loaded successfully."); 
+            if not job_description_text:
+                print("Warning: No text extracted from PDF.")
+                return None, None, []
+            print("Job description loaded successfully.")
             
             # parser = JsonOutputParser(pydantic_object=JobDescriptionData)
             # prompt = ChatPromptTemplate.from_messages([ SystemMessagePromptTemplate.from_template("... Parse job description ...\n{format_instructions}"), HumanMessagePromptTemplate.from_template("Job description Text:\n```{job_description_text}```")])
@@ -322,7 +326,7 @@ class TechnicalInterviewerApp:
             #     print("Warning: LLM did not return expected structure.")
                 
             return job_description_text
-        except Exception as e: print(f"Error loading or processing job description: {e}"); 
+        except Exception as e: print(f"Error loading or processing job description: {e}")
         
         return job_description_text #, job_title, company_name, requirements, responsibilities
 
@@ -330,23 +334,37 @@ class TechnicalInterviewerApp:
     def _initialize_vectorstore(self) -> Optional[FAISS]:
         """Chunks documents, creates embeddings, and initializes FAISS vector store."""
         
-        if not self.resume_text: print("Skipping vector store initialization: No resume text."); return None
-        print("Initializing vector store...");
+        if not self.resume_text: 
+            print("Skipping vector store initialization: No resume text.")
+            return None
+        
+        print("Initializing vector store...")
         try:
-            texts_to_embed = [self.resume_text];
+            texts_to_embed = [self.resume_text]
             if self.job_description: 
                 texts_to_embed.append(self.job_description_text)
-            text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150); all_splits = text_splitter.create_documents(texts_to_embed)
-            print(f"Created {len(all_splits)} document chunks."); vectorstore = FAISS.from_documents(all_splits, self.embeddings)
-            print("FAISS vector store created successfully."); return vectorstore
-        except Exception as e: print(f"Error initializing vector store: {e}"); return None
+            text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
+            all_splits = text_splitter.create_documents(texts_to_embed)
+            print(f"Created {len(all_splits)} document chunks.")
+            
+            vectorstore = FAISS.from_documents(all_splits, self.embeddings)
+            print("FAISS vector store created successfully.")
+            return vectorstore
+        except Exception as e:
+            print(f"Error initializing vector store: {e}")
+            return None
 
     def _get_relevant_context(self, query: str, k: int = 3) -> str:
         """Retrieves relevant context from the vector store."""
         
         if not self.vectorstore: return "No vector store available."
-        try: docs = self.vectorstore.similarity_search(query, k=k); context = "\n---\n".join([doc.page_content for doc in docs]); return context
-        except Exception as e: print(f"Error during similarity search: {e}"); return "Error retrieving context."
+        try: 
+            docs = self.vectorstore.similarity_search(query, k=k)
+            context = "\n---\n".join([doc.page_content for doc in docs])
+            return context
+        except Exception as e: 
+            print(f"Error during similarity search: {e}")
+            return "Error retrieving context."
 
     def _generate_question(self) -> str:
         """Generates the next interview question using the history-aware chain."""
@@ -458,22 +476,39 @@ class TechnicalInterviewerApp:
     def start_interview(self):
         """Starts the interactive interview loop."""
         
-        print("\n--- Interview Started ---"); greeting = "Hello!";
-        if self.candidate_name: greeting = f"Hello {self.candidate_name}!"
+        print("\n--- Interview Started ---")
+        
+        greeting = "Hello!"
+        if self.candidate_name: 
+            greeting = f"Hello {self.candidate_name}!"
         print(f"Interviewer: {greeting} Welcome to the technical interview simulation.")
+        
         print("Type 'stop', 'end interview', or 'finish' at any time to end.")
         print("You can also say 'talk about AI' or 'coding challenge' to switch topics.")
+        
         while self.interview_stage != "END":
             question = self._generate_question()
-            if self.interview_stage == "END": print(f"\nInterviewer: {question}"); break
+            
             print(f"\nInterviewer: {question}")
-            is_coding_challenge_question = (self.interview_stage == "CODING_CHALLENGE" and ("generate a" in question.lower() or "coding problem" in question.lower()) and ("difficulty" in question.lower() or self.coding_preferences))
+            if self.interview_stage == "END": 
+                break
+            
             user_answer = input("You: ")
-            if user_answer.lower() in ["stop", "end interview", "finish"]: self.interview_stage = "END"; print("\nInterviewer: Understood. Thank you for your time today!"); break
+            
+            if user_answer.lower() in ["stop", "end interview", "finish"]: 
+                self.interview_stage = "END"
+                print("\nInterviewer: Understood. Thank you for your time today!")
+                break
+            
+            is_coding_challenge_question = (self.interview_stage == "CODING_CHALLENGE" 
+                                            and ("generate a" in question.lower() or "coding problem" in question.lower()) 
+                                            and ("difficulty" in question.lower() or self.coding_preferences))
             if self.interview_stage != "CODING_SETUP" and not is_coding_challenge_question:
                 feedback = self._evaluate_answer(question, user_answer)
                 print(f"\nInterviewer Feedback: {feedback}")
-            elif is_coding_challenge_question: print("\nInterviewer: Okay, thank you for providing your solution. I will evaluate it.")
+            elif is_coding_challenge_question: 
+                print("\nInterviewer: Okay, thank you for providing your solution. I will evaluate it.")
+            
             self._transition_state(user_answer)
         print("\n--- Interview Ended ---")
 
